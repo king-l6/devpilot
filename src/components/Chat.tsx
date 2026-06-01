@@ -67,6 +67,9 @@ export default function Chat() {
         )}
 
         {/* 渲染每条消息 */}
+
+        <div>{JSON.stringify(messages)}</div>
+
         {messages.map((msg) => (
           <div
             key={msg.id}
@@ -84,7 +87,7 @@ export default function Chat() {
               )}
               {/* parts 是新版 AI SDK 的消息结构，text 类型包含实际文本 */}
               {msg.parts?.map((part, i) =>
-                part.type === "text" ? <span key={i}>{part.text}</span> : null
+                part.type === "text" ? <span key={i}>{part.text}</span> : null,
               )}
             </div>
           </div>
@@ -108,7 +111,10 @@ export default function Chat() {
       </div>
 
       {/* ===== 底部输入栏 ===== */}
-      <form onSubmit={handleSubmit} className="border-t border-zinc-800 px-6 py-4">
+      <form
+        onSubmit={handleSubmit}
+        className="border-t border-zinc-800 px-6 py-4"
+      >
         <div className="flex gap-3 max-w-3xl mx-auto">
           <input
             value={input}

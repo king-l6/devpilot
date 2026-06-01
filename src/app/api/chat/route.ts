@@ -22,7 +22,21 @@ const openai = createOpenAI({
 
 export async function POST(req: Request) {
   // 从前端请求体中提取消息历史
+  
   const { messages } = await req.json();
+  console.log(messages);
+
+  // AI SDK useChat 返回的消息使用 parts 格式，需要转为 streamText 期望的 role/content 格式
+  const formattedMessages = messages.map(
+    (msg: { role: string; parts?: Array<{ type: string; text: string }> }) => ({
+      role: msg.role,
+      content:
+        msg.parts
+          ?.filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join("") || "",
+    }),
+  );
 
   // streamText：调用 LLM 并返回流式响应
   const result = streamText({
@@ -30,14 +44,14 @@ export async function POST(req: Request) {
     model: openai.chat(process.env.OPENAI_MODEL || "gpt-4o-mini"),
     // system prompt 定义 AI 的角色和行为
     system: `你是 DevPilot，一个专业的开发运维 AI 助手。
-你的职责：
-- 帮助开发者解答技术问题
-- 协助排查线上问题
-- 提供代码审查建议
-- 解释错误日志和监控指标
+              你的职责：
+              - 帮助开发者解答技术问题
+              - 协助排查线上问题
+              - 提供代码审查建议
+              - 解释错误日志和监控指标
 
-回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。`,
-    messages,
+              回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。`,
+    messages: formattedMessages,
   });
 
   // 将流式结果转为前端 useChat 能解析的响应格式

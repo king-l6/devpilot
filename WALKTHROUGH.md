@@ -100,10 +100,22 @@ const openai = createOpenAI({                   // ③
 export async function POST(req: Request) {      // ④
   const { messages } = await req.json();        // ⑤
 
+  // ⑤-b 格式转换：useChat 发来的消息是 parts 格式，streamText 需要 role/content 格式
+  const formattedMessages = messages.map(
+    (msg: { role: string; parts?: Array<{ type: string; text: string }> }) => ({
+      role: msg.role,
+      content:
+        msg.parts
+          ?.filter((p) => p.type === "text")
+          .map((p) => p.text)
+          .join("") || "",
+    }),
+  );
+
   const result = streamText({                   // ⑥
     model: openai.chat(process.env.OPENAI_MODEL || "gpt-4o-mini"),  // ⑥-b
     system: `你是 DevPilot...`,                  // ⑦
-    messages,                                   // ⑧
+    messages: formattedMessages,                // ⑧ 用转换后的消息
   });
 
   return result.toUIMessageStreamResponse();    // ⑨
@@ -156,6 +168,20 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 
 解析请求体。前端发来的 JSON 被解析成对象，提取消息历史。
 
+**⑤-b 消息格式转换**
+
+`useChat` 新版发来的消息格式是 `parts` 结构：
+```ts
+{ role: "user", parts: [{ type: "text", text: "你好" }] }
+```
+
+但 `streamText` 期望的是传统的 `role/content` 格式：
+```ts
+{ role: "user", content: "你好" }
+```
+
+所以需要做一次 map 转换。这也是你在 Chat.tsx 里加 `JSON.stringify(messages)` 调试后发现的——直接把 parts 格式丢给 streamText 会拿到空回复。
+
 **⑥ `streamText({ model, messages })`**
 
 核心调用。它做了这些事：
@@ -181,7 +207,7 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 
 1. 在 `system` 里加一句"回答必须用文言文"，观察 AI 回答风格的变化
 2. 把 `mimo-v2.5-pro` 换成 `mimo-v2.5`，对比响应速度和质量
-3. 在 `streamText` 前加 `console.log(messages)`，看前端每次发来的完整消息历史
+3. 试试去掉 `formattedMessages` 转换，直接把 `messages` 传给 `streamText`，观察会发生什么（空回复或报错）
 4. 试试把 `openai.chat()` 改回 `openai()`，看报错信息，理解两种 API 的区别
 
 ---
@@ -293,6 +319,9 @@ error        → 出错了
   </div>
 )}
 
+{/* 调试输出：直接打印 messages 原始结构，开发时用来观察数据格式 */}
+<div>{JSON.stringify(messages)}</div>
+
 {/* 消息列表 */}
 {messages.map((msg) => (
   <div key={msg.id}>
@@ -324,6 +353,15 @@ msg.parts = [
 ```
 
 现在只需要处理 `text` 类型，后面加 Tool Use 时会扩展。
+
+**`JSON.stringify(messages)` 调试输出**
+
+开发时直接把 messages 原始结构打印到页面上，可以直观看到：
+- 每条消息的完整结构（id、role、parts）
+- 消息是怎么随对话累积的
+- parts 格式长什么样，为什么要转换后再发给 streamText
+
+调通后删掉这行即可。
 
 ### 动手实验
 
@@ -403,6 +441,18 @@ react                   ← UI 库（useState、useEffect、useRef）
 - Client Component（`"use client"`）：在浏览器运行，可以用 hooks、发请求
 
 route.ts 在服务端运行（保护 API Key），Chat.tsx 在客户端运行（处理用户交互）。
+
+### 5. 消息格式兼容性
+
+AI SDK 各层之间的消息格式不统一，这是实际开发中常见的坑：
+
+| 层 | 格式 | 示例 |
+|----|------|------|
+| useChat 返回 | `parts` 结构 | `{ role: "user", parts: [{ type: "text", text: "你好" }] }` |
+| streamText 期望 | `role/content` | `{ role: "user", content: "你好" }` |
+| OpenAI API | `role/content` | `{ role: "user", content: "你好" }` |
+
+所以 route.ts 里需要做 `formattedMessages` 转换。这个转换层在实际项目中经常被忽略，导致"前端发了消息但 AI 没回复"的 bug。
 
 ---
 
