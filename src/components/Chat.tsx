@@ -4,44 +4,91 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useState, useRef, useEffect } from "react";
 
+const requestIdRef = { current: "" };
+
 export default function Chat() {
-  // useChat 核心 hook：管理消息列表、发送请求、解析流式响应
-  // transport 指定 API 地址，对应 route.ts 的路径
   const { messages, sendMessage, status } = useChat({
-    transport: new DefaultChatTransport({ api: "/api/chat" }),
+    transport: new DefaultChatTransport({
+      api: "/api/chat",
+      headers: () => ({ "x-request-id": requestIdRef.current }),
+    }),
   });
 
-  // 输入框状态（useChat 不再内置 input 管理，需要自己维护）
   const [input, setInput] = useState("");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [msgUsages, setMsgUsages] = useState<
+    Record<string, { inputTokens: number; outputTokens: number }>
+  >({});
 
-  // status 状态机：submitted → streaming → ready / error
   const isLoading = status === "submitted" || status === "streaming";
 
-  // 新消息到来时自动滚动到底部
+  const pendingRequestRef = useRef<string | null>(null);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // 表单提交：发送消息并清空输入框
+  // 流式响应结束后，轮询获取本次对话的 token 用量
+  useEffect(() => {
+    if (status !== "ready" || !pendingRequestRef.current) return;
+
+    const requestId = pendingRequestRef.current;
+    pendingRequestRef.current = null;
+
+    const timer = setTimeout(() => {
+      fetch(`/api/chat?id=${requestId}`)
+        .then((r) => r.json())
+        .then((data) => {
+          if (data) {
+            const lastAssistant = [...messages]
+              .reverse()
+              .find((m) => m.role === "assistant");
+            if (lastAssistant) {
+              setMsgUsages((prev) => ({ ...prev, [lastAssistant.id]: data }));
+            }
+          }
+        });
+    }, 500);
+
+    return () => clearTimeout(timer);
+  }, [status, messages]);
+
+  // 计算当前会话总用量
+  const totalUsage = Object.values(msgUsages).reduce(
+    (acc, u) => ({
+      inputTokens: acc.inputTokens + (u.inputTokens ?? 0),
+      outputTokens: acc.outputTokens + (u.outputTokens ?? 0),
+    }),
+    { inputTokens: 0, outputTokens: 0 },
+  );
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!input.trim() || isLoading) return;
+
+    const rid = crypto.randomUUID();
+    requestIdRef.current = rid;
+    pendingRequestRef.current = rid;
     sendMessage({ text: input });
     setInput("");
   };
 
   return (
     <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
-      {/* ===== 顶部标题栏 ===== */}
-      <header className="border-b border-zinc-800 px-6 py-4">
-        <h1 className="text-lg font-semibold">DevPilot</h1>
-        <p className="text-sm text-zinc-400">开发运维 AI 助手</p>
+      <header className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">DevPilot</h1>
+          <p className="text-sm text-zinc-400">开发运维 AI 助手</p>
+        </div>
+        {totalUsage.inputTokens + totalUsage.outputTokens > 0 && (
+          <div className="text-xs text-zinc-500 text-right">
+            <div>总输入 {totalUsage.inputTokens} tokens</div>
+            <div>总输出 {totalUsage.outputTokens} tokens</div>
+          </div>
+        )}
       </header>
 
-      {/* ===== 消息列表区域 ===== */}
       <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
-        {/* 空状态：显示快捷提问按钮 */}
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-zinc-500">
             <div className="text-4xl mb-4">🤖</div>
@@ -66,34 +113,36 @@ export default function Chat() {
           </div>
         )}
 
-        {/* 渲染每条消息 */}
-
-        <div>{JSON.stringify(messages)}</div>
-
         {messages.map((msg) => (
           <div
             key={msg.id}
             className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
           >
-            <div
-              className={`max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
-                msg.role === "user"
-                  ? "bg-blue-600 text-white"
-                  : "bg-zinc-800 text-zinc-100"
-              }`}
-            >
-              {msg.role === "assistant" && (
-                <div className="text-xs text-zinc-500 mb-1">DevPilot</div>
-              )}
-              {/* parts 是新版 AI SDK 的消息结构，text 类型包含实际文本 */}
-              {msg.parts?.map((part, i) =>
-                part.type === "text" ? <span key={i}>{part.text}</span> : null,
+            <div className="max-w-[80%]">
+              <div
+                className={`rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                  msg.role === "user"
+                    ? "bg-blue-600 text-white"
+                    : "bg-zinc-800 text-zinc-100"
+                }`}
+              >
+                {msg.role === "assistant" && (
+                  <div className="text-xs text-zinc-500 mb-1">DevPilot</div>
+                )}
+                {msg.parts?.map((part, i) =>
+                  part.type === "text" ? <span key={i}>{part.text}</span> : null,
+                )}
+              </div>
+              {msg.role === "assistant" && msgUsages[msg.id] && (
+                <div className="text-[10px] text-zinc-600 mt-1 px-2">
+                  输入 {msgUsages[msg.id].inputTokens} · 输出{" "}
+                  {msgUsages[msg.id].outputTokens} tokens
+                </div>
               )}
             </div>
           </div>
         ))}
 
-        {/* 加载中的打字动画 */}
         {isLoading && (
           <div className="flex justify-start">
             <div className="bg-zinc-800 rounded-2xl px-4 py-3 text-sm">
@@ -106,11 +155,9 @@ export default function Chat() {
           </div>
         )}
 
-        {/* 滚动锚点 */}
         <div ref={messagesEndRef} />
       </div>
 
-      {/* ===== 底部输入栏 ===== */}
       <form
         onSubmit={handleSubmit}
         className="border-t border-zinc-800 px-6 py-4"

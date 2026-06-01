@@ -1,6 +1,9 @@
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 
+// 按 requestId 暂存 token 用量
+const usageStore = new Map<string, Record<string, number>>();
+
 // 创建 OpenAI 兼容的 provider 实例
 // 用自定义 fetch 去掉第三方 API 不支持的 OpenAI 专属参数
 const openai = createOpenAI({
@@ -21,12 +24,9 @@ const openai = createOpenAI({
 });
 
 export async function POST(req: Request) {
-  // 从前端请求体中提取消息历史
-  
   const { messages } = await req.json();
-  console.log(messages);
+  const requestId = req.headers.get("x-request-id") || crypto.randomUUID();
 
-  // AI SDK useChat 返回的消息使用 parts 格式，需要转为 streamText 期望的 role/content 格式
   const formattedMessages = messages.map(
     (msg: { role: string; parts?: Array<{ type: string; text: string }> }) => ({
       role: msg.role,
@@ -38,22 +38,40 @@ export async function POST(req: Request) {
     }),
   );
 
-  // streamText：调用 LLM 并返回流式响应
   const result = streamText({
-    // 用 .chat() 显式走 chat/completions 接口，避免走 responses API
     model: openai.chat(process.env.OPENAI_MODEL || "gpt-4o-mini"),
-    // system prompt 定义 AI 的角色和行为
     system: `你是 DevPilot，一个专业的开发运维 AI 助手。
-              你的职责：
-              - 帮助开发者解答技术问题
-              - 协助排查线上问题
-              - 提供代码审查建议
-              - 解释错误日志和监控指标
+你的职责：
+- 帮助开发者解答技术问题
+- 协助排查线上问题
+- 提供代码审查建议
+- 解释错误日志和监控指标
 
-              回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。`,
+回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。`,
     messages: formattedMessages,
+    onFinish: ({ usage }) => {
+      usageStore.set(requestId, {
+        inputTokens: usage.inputTokens ?? 0,
+        outputTokens: usage.outputTokens ?? 0,
+      });
+    },
   });
 
-  // 将流式结果转为前端 useChat 能解析的响应格式
   return result.toUIMessageStreamResponse();
+}
+
+// 按 requestId 查询单次对话的 token 用量
+export async function GET(req: Request) {
+  const { searchParams } = new URL(req.url);
+  const requestId = searchParams.get("id");
+
+  if (!requestId) {
+    return Response.json(null);
+  }
+
+  const usage = usageStore.get(requestId);
+  if (usage) {
+    usageStore.delete(requestId);
+  }
+  return Response.json(usage || null);
 }
