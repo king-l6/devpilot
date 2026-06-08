@@ -42,11 +42,11 @@ OPENAI_MODEL=gpt-4o-mini
 
 ### 逐行解释
 
-| 变量 | 作用 | 你该知道的 |
-|------|------|-----------|
-| `OPENAI_API_KEY` | API 密钥 | 绝对不能提交到 git，.env.local 已被 gitignore |
-| `OPENAI_BASE_URL` | API 地址 | 改成 `https://api.deepseek.com` 就能用 DeepSeek |
-| `OPENAI_MODEL` | 模型名 | `gpt-4o-mini` 便宜够用，换 `gpt-4o` 更强但贵 10 倍 |
+| 变量              | 作用     | 你该知道的                                         |
+| ----------------- | -------- | -------------------------------------------------- |
+| `OPENAI_API_KEY`  | API 密钥 | 绝对不能提交到 git，.env.local 已被 gitignore      |
+| `OPENAI_BASE_URL` | API 地址 | 改成 `https://api.deepseek.com` 就能用 DeepSeek    |
+| `OPENAI_MODEL`    | 模型名   | `gpt-4o-mini` 便宜够用，换 `gpt-4o` 更强但贵 10 倍 |
 
 ### 为什么叫 "OpenAI 兼容"？
 
@@ -69,6 +69,7 @@ curl https://api.openai.com/v1/chat/completions \
 ```
 
 请求体核心字段：
+
 - `model`：用哪个模型
 - `messages`：对话历史数组，每条有 `role`（system/user/assistant）和 `content`
 - `stream`：true/false，是否流式返回（后面会用到）
@@ -80,16 +81,18 @@ curl https://api.openai.com/v1/chat/completions \
 这是整个应用的核心枢纽。
 
 ```ts
-import { streamText } from "ai";              // ①
+import { streamText } from "ai"; // ①
 import { createOpenAI } from "@ai-sdk/openai"; // ②
 
-// ⑩ 按 requestId 暂存 token 用量，供 GET 请求读取
-const usageStore = new Map<string, Record<string, number>>();
+const usageStore = new Map<string, Record<string, number>>(); // ⑩
 
-const openai = createOpenAI({                   // ③
+// ② 创建 OpenAI 兼容的 provider 实例
+// 用自定义 fetch 去掉第三方 API 不支持的 OpenAI 专属参数
+const openai = createOpenAI({
   apiKey: process.env.OPENAI_API_KEY,
   baseURL: process.env.OPENAI_BASE_URL,
-  fetch: async (url, options) => {              // ③-b
+  fetch: async (url, options) => {
+    // ③
     if (options?.body) {
       const body = JSON.parse(options.body as string);
       delete body.service_tier;
@@ -102,8 +105,9 @@ const openai = createOpenAI({                   // ③
   },
 });
 
-export async function POST(req: Request) {      // ④
-  const { messages } = await req.json();        // ⑤
+export async function POST(req: Request) {
+  // ④
+  const { messages } = await req.json(); // ⑤
   const requestId = req.headers.get("x-request-id") || crypto.randomUUID(); // ⑪
 
   // ⑤-b 格式转换：useChat 发来的消息是 parts 格式，streamText 需要 role/content 格式
@@ -118,29 +122,43 @@ export async function POST(req: Request) {      // ④
     }),
   );
 
-  const result = streamText({                   // ⑥
-    model: openai.chat(process.env.OPENAI_MODEL || "gpt-4o-mini"),  // ⑥-b
-    system: `你是 DevPilot...`,                  // ⑦
-    messages: formattedMessages,                // ⑧ 用转换后的消息
-    onFinish: ({ usage }) => {                  // ⑫
-      usageStore.set(requestId, {               // 流结束后把 usage 存起来
+  const result = streamText({
+    // ⑥
+    model: openai.chat(process.env.OPENAI_MODEL || "gpt-4o-mini"), // ⑥-b
+    system: `你是 DevPilot，一个专业的开发运维 AI 助手。
+你的职责：
+- 帮助开发者解答技术问题
+- 协助排查线上问题
+- 提供代码审查建议
+- 解释错误日志和监控指标
+
+回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。回答必须用台湾腔`, // ⑦
+    messages: formattedMessages, // ⑧
+    onFinish: ({ usage }) => {
+      // ⑫
+      usageStore.set(requestId, {
         inputTokens: usage.inputTokens ?? 0,
         outputTokens: usage.outputTokens ?? 0,
       });
     },
   });
 
-  return result.toUIMessageStreamResponse();    // ⑨
+  return result.toUIMessageStreamResponse(); // ⑨
 }
 
 // ⑬ GET /api/chat?id=xxx → 返回指定请求的 token 用量
 export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
   const requestId = searchParams.get("id");
-  if (!requestId) return Response.json(null);
+
+  if (!requestId) {
+    return Response.json(null);
+  }
 
   const usage = usageStore.get(requestId);
-  if (usage) usageStore.delete(requestId);      // 读后即删，避免内存泄漏
+  if (usage) {
+    usageStore.delete(requestId); // 读后即删，避免内存泄漏
+  }
   return Response.json(usage || null);
 }
 ```
@@ -156,6 +174,7 @@ export async function GET(req: Request) {
 **① `streamText` 来自 `ai` 包（Vercel AI SDK）**
 
 它是对 LLM API 调用的封装。你也可以用 `fetch` 直接调 OpenAI API，但 `streamText` 帮你处理了：
+
 - 流式响应的解析
 - 错误重试
 - Token 计数
@@ -164,8 +183,6 @@ export async function GET(req: Request) {
 **② `createOpenAI` 是 provider 工厂函数**
 
 AI SDK 的设计是：每种模型提供商（OpenAI、Anthropic、Google）有自己的 provider，但调用方式统一。
-
-**③ 创建 provider 实例**
 
 ```ts
 const openai = createOpenAI({
@@ -177,7 +194,7 @@ const openai = createOpenAI({
 
 这个 `openai` 是一个工厂，调用 `openai.chat("gpt-4o-mini")` 会返回一个具体的模型实例。
 
-**③-b 自定义 fetch 的作用**
+**③ 自定义 fetch 的作用**
 
 AI SDK 默认发请求时会带 `service_tier`、`store`、`parallel_tool_calls` 等 OpenAI 专属参数。
 第三方兼容 API 不认识这些字段，会直接返回 404。
@@ -194,11 +211,13 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 **⑤-b 消息格式转换**
 
 `useChat` 新版发来的消息格式是 `parts` 结构：
+
 ```ts
 { role: "user", parts: [{ type: "text", text: "你好" }] }
 ```
 
 但 `streamText` 期望的是传统的 `role/content` 格式：
+
 ```ts
 { role: "user", content: "你好" }
 ```
@@ -208,9 +227,15 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 **⑥ `streamText({ model, messages })`**
 
 核心调用。它做了这些事：
+
 1. 把 messages 数组发给 OpenAI API
 2. 开启流式接收（SSE）
 3. 返回一个 `result` 对象，包含流式数据
+
+**⑥-b `openai.chat(model)` vs `openai(model)`**
+
+`openai(model)` 走的是 OpenAI 新的 `responses` API，第三方兼容 API 不支持。
+`openai.chat(model)` 走的是传统的 `chat/completions` API，兼容性更好。
 
 **⑦ `system` prompt**
 
@@ -223,12 +248,14 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 **⑨ `toUIMessageStreamResponse()`**
 
 把流式结果转成前端 `useChat` hook 能解析的特定格式。这个格式包含了：
+
 - 文本 token（逐步输出）
 - 元数据（finish reason、usage 等）
 
 **⑩ `usageStore` — 内存级 token 用量存储**
 
 用一个 Map 按 `requestId` 存每次对话的 token 用量。简单但有限制：
+
 - 服务重启就清空（生产环境应该存数据库）
 - 只存最后一次请求的值也没问题，因为前端是按 requestId 精确查询的
 
@@ -239,6 +266,7 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 **⑫ `onFinish` 回调**
 
 `streamText` 的生命周期钩子，流式输出全部完成后触发。参数 `usage` 包含：
+
 - `inputTokens`：输入 token 数（系统提示词 + 对话历史 + 用户当前消息）
 - `outputTokens`：输出 token 数（AI 回复的长度）
 
@@ -258,41 +286,45 @@ Next.js App Router 的约定：`route.ts` 里导出的 `POST` 函数就是 POST 
 
 ## 文件 3：`src/components/Chat.tsx` — 前端 UI
 
-这是用户直接交互的组件，70 行左右。
+这是用户直接交互的组件。
 
 ```tsx
-"use client";                                          // ①
+"use client"; // ①
 
-import { useChat } from "@ai-sdk/react";               // ②
-import { DefaultChatTransport } from "ai";              // ③
-import { useState, useRef, useEffect } from "react";    // ④
+import { useChat } from "@ai-sdk/react"; // ②
+import { DefaultChatTransport } from "ai"; // ③
+import { useState, useRef, useEffect } from "react"; // ④
 
-const requestIdRef = { current: "" };                   // ⑭
+const requestIdRef = { current: "" }; // ⑮
 
 export default function Chat() {
-  const { messages, sendMessage, status } = useChat({   // ⑤
+  const { messages, sendMessage, status } = useChat({
+    // ⑤
     transport: new DefaultChatTransport({
       api: "/api/chat",
-      headers: () => ({ "x-request-id": requestIdRef.current }), // ⑮
+      headers: () => ({ "x-request-id": requestIdRef.current }), // ⑯
     }),
   });
 
-  const [input, setInput] = useState("");               // ⑥
-  const messagesEndRef = useRef<HTMLDivElement>(null);   // ⑦
-  const [msgUsages, setMsgUsages] = useState<            // ⑯
+  const [input, setInput] = useState(""); // ⑥
+  const messagesEndRef = useRef<HTMLDivElement>(null); // ⑦
+  const [msgUsages, setMsgUsages] = useState<
+    // ⑰
     Record<string, { inputTokens: number; outputTokens: number }>
   >({});
 
   const isLoading = status === "submitted" || status === "streaming"; // ⑧
-  const pendingRequestRef = useRef<string | null>(null);  // ⑰
+  const pendingRequestRef = useRef<string | null>(null); // ⑱
 
-  useEffect(() => {                                      // ⑨
+  useEffect(() => {
+    // ⑨
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  // ⑱ 流式响应结束后，轮询获取本次对话的 token 用量
+  // ⑲ 流式响应结束后，轮询获取本次对话的 token 用量
   useEffect(() => {
     if (status !== "ready" || !pendingRequestRef.current) return;
+
     const requestId = pendingRequestRef.current;
     pendingRequestRef.current = null;
 
@@ -310,10 +342,11 @@ export default function Chat() {
           }
         });
     }, 500);
+
     return () => clearTimeout(timer);
   }, [status, messages]);
 
-  // ⑲ 累计当前会话总用量
+  // ⑳ 累计当前会话总用量
   const totalUsage = Object.values(msgUsages).reduce(
     (acc, u) => ({
       inputTokens: acc.inputTokens + (u.inputTokens ?? 0),
@@ -322,16 +355,131 @@ export default function Chat() {
     { inputTokens: 0, outputTokens: 0 },
   );
 
-  const handleSubmit = (e: React.FormEvent) => {        // ⑩
+  const handleSubmit = (e: React.FormEvent) => {
+    // ⑩
     e.preventDefault();
     if (!input.trim() || isLoading) return;
-    const rid = crypto.randomUUID();                     // ⑳
+
+    const rid = crypto.randomUUID(); // ㉑
     requestIdRef.current = rid;
     pendingRequestRef.current = rid;
     sendMessage({ text: input });
     setInput("");
   };
-  // ... JSX 渲染部分见下方
+
+  return (
+    <div className="flex flex-col h-screen bg-zinc-950 text-zinc-100">
+      <header className="border-b border-zinc-800 px-6 py-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-lg font-semibold">DevPilot</h1>
+          <p className="text-sm text-zinc-400">开发运维 AI 助手</p>
+        </div>
+        {/* ㉒ 右上角显示当前会话总 token 用量 */}
+        {totalUsage.inputTokens + totalUsage.outputTokens > 0 && (
+          <div className="text-xs text-zinc-500 text-right">
+            <div>总输入 {totalUsage.inputTokens} tokens</div>
+            <div>总输出 {totalUsage.outputTokens} tokens</div>
+          </div>
+        )}
+      </header>
+
+      <div className="flex-1 overflow-y-auto px-6 py-4 space-y-4">
+        {/* 空状态：显示快捷提问 */}
+        {messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full text-zinc-500">
+            <div className="text-4xl mb-4">🤖</div>
+            <p className="text-lg font-medium">你好，我是 DevPilot</p>
+            <p className="text-sm mt-1">问我任何开发运维相关的问题</p>
+            <div className="grid grid-cols-2 gap-3 mt-8 max-w-md">
+              {[
+                "帮我解释一下这段报错",
+                "如何优化慢 SQL 查询",
+                "Docker 镜像太大怎么瘦身",
+                "NestJS 中间件怎么写",
+              ].map((suggestion) => (
+                <button
+                  key={suggestion}
+                  onClick={() => sendMessage({ text: suggestion })}
+                  className="text-left text-sm px-4 py-3 rounded-xl border border-zinc-800 hover:bg-zinc-900 transition-colors"
+                >
+                  {suggestion}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* 消息列表 */}
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+          >
+            <div className="max-w-[80%]">
+              <div
+                className={`rounded-2xl px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap ${
+                  msg.role === "user"
+                    ? "bg-blue-600 text-white"
+                    : "bg-zinc-800 text-zinc-100"
+                }`}
+              >
+                {msg.role === "assistant" && (
+                  <div className="text-xs text-zinc-500 mb-1">DevPilot</div>
+                )}
+                {msg.parts?.map((part, i) =>
+                  part.type === "text" ? <span key={i}>{part.text}</span> : null,
+                )}
+              </div>
+              {/* ㉓ 单次对话的 token 用量，显示在 assistant 消息下方 */}
+              {msg.role === "assistant" && msgUsages[msg.id] && (
+                <div className="text-[10px] text-zinc-600 mt-1 px-2">
+                  输入 {msgUsages[msg.id].inputTokens} · 输出{" "}
+                  {msgUsages[msg.id].outputTokens} tokens
+                </div>
+              )}
+            </div>
+          </div>
+        ))}
+
+        {/* 加载动画：三个 bouncing 圆点 */}
+        {isLoading && (
+          <div className="flex justify-start">
+            <div className="bg-zinc-800 rounded-2xl px-4 py-3 text-sm">
+              <div className="flex items-center gap-1">
+                <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.3s]" />
+                <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce [animation-delay:-0.15s]" />
+                <span className="w-2 h-2 bg-zinc-500 rounded-full animate-bounce" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* 滚动锚点 */}
+        <div ref={messagesEndRef} />
+      </div>
+
+      <form
+        onSubmit={handleSubmit}
+        className="border-t border-zinc-800 px-6 py-4"
+      >
+        <div className="flex gap-3 max-w-3xl mx-auto">
+          <input
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder="输入你的问题..."
+            className="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+          />
+          <button
+            type="submit"
+            disabled={isLoading || !input.trim()}
+            className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-zinc-700 disabled:text-zinc-500 rounded-xl text-sm font-medium transition-colors"
+          >
+            发送
+          </button>
+        </div>
+      </form>
+    </div>
+  );
 }
 ```
 
@@ -363,11 +511,10 @@ useChat 内部：
 告诉 useChat 请求发到哪。`api: "/api/chat"` 对应 `src/app/api/chat/route.ts`。
 
 为什么不直接硬编码？因为：
+
 - 开发环境是 `http://localhost:3000/api/chat`
 - 生产环境可能是 `https://your-domain.com/api/chat`
 - transport 层统一处理了这个差异
-
-`headers` 传一个函数而不是固定对象，这样每次请求都能返回不同的 `x-request-id`。`DefaultChatTransport` 内部会在每次 `sendMessages` 时调用这个函数，把返回的 headers 合并到请求头里。
 
 **④ React hooks**
 
@@ -377,11 +524,11 @@ useChat 内部：
 
 **⑤ useChat 返回值**
 
-| 字段 | 类型 | 含义 |
-|------|------|------|
-| `messages` | `UIMessage[]` | 完整消息列表（自动维护） |
-| `sendMessage` | `function` | 发送消息的方法 |
-| `status` | `string` | 当前状态 |
+| 字段          | 类型          | 含义                     |
+| ------------- | ------------- | ------------------------ |
+| `messages`    | `UIMessage[]` | 完整消息列表（自动维护） |
+| `sendMessage` | `function`    | 发送消息的方法           |
+| `status`      | `string`      | 当前状态                 |
 
 **⑥ 为什么 input 不用 useChat 管理？**
 
@@ -400,84 +547,86 @@ streaming    → AI 正在逐 token 输出
 error        → 出错了
 ```
 
-### JSX 渲染部分
+**⑨ 滚动 useEffect**
 
-```tsx
-{/* 空状态：显示快捷提问 */}
-{messages.length === 0 && (
-  <div>
-    {/* 4 个快捷按钮，点击直接 sendMessage */}
-  </div>
-)}
+每当 `messages` 变化，自动滚动到消息列表底部，保证用户始终看到最新内容。
 
-{/* 消息列表 */}
-{messages.map((msg) => (
-  <div key={msg.id}>
-    {/* 用户消息靠右蓝色，AI 消息靠左灰色 */}
-    {msg.parts?.map((part, i) =>
-      part.type === "text" ? <span key={i}>{part.text}</span> : null
-    )}
-    {/* ㉑ 单次对话的 token 用量，显示在 assistant 消息下方 */}
-    {msg.role === "assistant" && msgUsages[msg.id] && (
-      <div className="text-[10px] text-zinc-600 mt-1 px-2">
-        输入 {msgUsages[msg.id].inputTokens} · 输出 {msgUsages[msg.id].outputTokens} tokens
-      </div>
-    )}
-  </div>
-))}
+**⑩ `handleSubmit` — 发送消息**
 
-{/* 加载动画：三个 bouncing 圆点 */}
-{isLoading && ( ... )}
+表单提交时：生成唯一 requestId → 存入 ref → 调用 `sendMessage` → 清空输入框。
 
-{/* 滚动锚点 */}
-<div ref={messagesEndRef} />
-```
+**⑪ `x-request-id` 请求头**
+
+前端在发送消息时自动生成 UUID，通过请求头传给后端。后端用这个 ID 把 usage 存到 Map 里，前端再用同一个 ID 来查询。这样就把"一次请求"和"它的 token 用量"关联起来了。
+
+**⑫ `onFinish` 回调**
+
+`streamText` 的生命周期钩子，流式输出全部完成后触发。参数 `usage` 包含：
+
+- `inputTokens`：输入 token 数（系统提示词 + 对话历史 + 用户当前消息）
+- `outputTokens`：输出 token 数（AI 回复的长度）
+
+**⑬ `GET` 处理器 — 查询 token 用量**
+
+同一个 `route.ts` 文件可以同时导出 `POST` 和 `GET`。前端轮询 `GET /api/chat?id=xxx`，拿到 usage 后从 Map 里删除（读后即删，避免内存泄漏）。
+
+**⑭ `usageStore` — 内存级 token 用量存储**
+
+用一个 Map 按 `requestId` 存每次对话的 token 用量。简单但有限制：
+
+- 服务重启就清空（生产环境应该存数据库）
+- 只存最后一次请求的值也没问题，因为前端是按 requestId 精确查询的
+
+**⑮ `requestIdRef` — 跨请求传递 ID**
+
+一个普通对象（不是 `useRef`），因为不需要触发重渲染。它在 `handleSubmit` 里被赋值，在 transport 的 `headers` 函数里被读取。由于 JS 对象是引用类型，transport 每次发请求时读到的都是最新值。
+
+**⑯ `headers: () => ({ "x-request-id": ... })` — 动态请求头**
+
+`DefaultChatTransport` 的 `headers` 支持传函数，每次 `sendMessages` 时调用。这样每个请求都能带上不同的 `x-request-id`，后端就能把 usage 存到对应的 key 下。
+
+**⑰ `msgUsages` — 按消息 ID 存储 token 用量**
+
+一个 state 对象，key 是消息 ID，value 是 `{ inputTokens, outputTokens }`。每条 assistant 消息对应一条 usage 记录。
+
+**⑱ `pendingRequestRef` — 标记"正在等待 usage 的请求"**
+
+发送消息时设为 requestId，流结束后轮询时读取并清空。用 ref 而不是 state 是因为它不需要触发重渲染。
+
+**⑲ 轮询 useEffect — 拿 token 用量**
+
+流式响应结束后（`status` 变为 `ready`），等 500ms 让服务端 `onFinish` 有时间存 usage，然后 `fetch GET /api/chat?id=xxx` 拿到数据，存入 `msgUsages`。500ms 的延迟是经验值，太短可能还没存好，太长用户体验差。
+
+**⑳ `totalUsage` — 累计当前会话的总 token 用量**
+
+把 `msgUsages` 里所有记录的 input/output 加起来，显示在右上角。每次有新的 usage 写入都会触发重新计算。
+
+**㉑ `crypto.randomUUID()` — 生成唯一请求 ID**
+
+浏览器原生 API，生成类似 `"3UFAmpx0VkWf1TSY"` 的 UUID。用来关联"前端的一次发送"和"后端的一次 onFinish 回调"。
+
+**㉒ 右上角总用量显示**
+
+当有至少一条 usage 记录时，在 header 右侧显示累计的输入/输出 token 数。
+
+**㉓ 单次 token 用量显示**
+
+在每条 assistant 消息下方小字显示该次对话的输入/输出 token 数。让用户直观看到每轮对话消耗了多少。
 
 **`msg.parts` 是什么？**
 
 新版 AI SDK 把消息拆成了多个 part：
+
 ```ts
 msg.parts = [
   { type: "text", text: "你好！" },
   // 后面学 Tool Use 后还会有：
   // { type: "tool-call", toolName: "search", args: {...} },
   // { type: "tool-result", result: {...} },
-]
+];
 ```
 
 现在只需要处理 `text` 类型，后面加 Tool Use 时会扩展。
-
-**⑭ `requestIdRef` — 跨请求传递 ID**
-
-一个普通对象（不是 `useRef`），因为不需要触发重渲染。它在 `handleSubmit` 里被赋值，在 transport 的 `headers` 函数里被读取。由于 JS 对象是引用类型，transport 每次发请求时读到的都是最新值。
-
-**⑮ `headers: () => ({ "x-request-id": ... })` — 动态请求头**
-
-`DefaultChatTransport` 的 `headers` 支持传函数，每次 `sendMessages` 时调用。这样每个请求都能带上不同的 `x-request-id`，后端就能把 usage 存到对应的 key 下。
-
-**⑯ `msgUsages` — 按消息 ID 存储 token 用量**
-
-一个 state 对象，key 是消息 ID，value 是 `{ inputTokens, outputTokens }`。每条 assistant 消息对应一条 usage 记录。
-
-**⑰ `pendingRequestRef` — 标记"正在等待 usage 的请求"**
-
-发送消息时设为 requestId，流结束后轮询时读取并清空。用 ref 而不是 state 是因为它不需要触发重渲染。
-
-**⑱ 轮询 useEffect — 拿 token 用量**
-
-流式响应结束后（`status` 变为 `ready`），等 500ms 让服务端 `onFinish` 有时间存 usage，然后 `fetch GET /api/chat?id=xxx` 拿到数据，存入 `msgUsages`。500ms 的延迟是经验值，太短可能还没存好，太长用户体验差。
-
-**⑲ `totalUsage` — 累计当前会话的总 token 用量**
-
-把 `msgUsages` 里所有记录的 input/output 加起来，显示在右上角。每次有新的 usage 写入都会触发重新计算。
-
-**⑳ `crypto.randomUUID()` — 生成唯一请求 ID**
-
-浏览器原生 API，生成类似 `"3UFAmpx0VkWf1TSY"` 的 UUID。用来关联"前端的一次发送"和"后端的一次 onFinish 回调"。
-
-**㉑ 单次 token 用量显示**
-
-在每条 assistant 消息下方小字显示该次对话的输入/输出 token 数。让用户直观看到每轮对话消耗了多少。
 
 ### 动手实验
 
@@ -507,16 +656,42 @@ export default function Home() {
 ## 文件 5：`src/app/layout.tsx` — 根布局
 
 ```tsx
-export default function RootLayout({ children }) {
+import type { Metadata } from "next";
+import { Geist, Geist_Mono } from "next/font/google";
+import "./globals.css";
+
+const geistSans = Geist({
+  variable: "--font-geist-sans",
+  subsets: ["latin"],
+});
+
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["latin"],
+});
+
+export const metadata: Metadata = {
+  title: "DevPilot - 开发运维 AI 助手",
+  description: "AI 驱动的开发运维助手",
+};
+
+export default function RootLayout({
+  children,
+}: Readonly<{
+  children: React.ReactNode;
+}>) {
   return (
-    <html lang="zh-CN">
-      <body>{children}</body>
+    <html
+      lang="zh-CN"
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+    >
+      <body className="min-h-full flex flex-col">{children}</body>
     </html>
   );
 }
 ```
 
-所有页面都会被这个 layout 包裹。`children` 就是 page.tsx 渲染的内容。
+所有页面都会被这个 layout 包裹。`children` 就是 page.tsx 渲染的内容。这里还加载了 Geist 字体和全局样式。
 
 ---
 
@@ -534,27 +709,31 @@ next                    ← 框架（route.ts、Server/Client Components）
 react                   ← UI 库（useState、useEffect、useRef）
 ```
 
-| 包 | 作用 | 类比 |
-|----|------|------|
-| `ai` | LLM 调用 + 流处理 | 相当于 axios 之于 HTTP |
-| `@ai-sdk/openai` | OpenAI 适配器 | 相当于 axios 里的 adapter |
-| `@ai-sdk/react` | React hooks | 相当于 react-query 之于 fetch |
-| `next` | 全栈框架 | 你已经熟悉了 |
+| 包               | 作用              | 类比                          |
+| ---------------- | ----------------- | ----------------------------- |
+| `ai`             | LLM 调用 + 流处理 | 相当于 axios 之于 HTTP        |
+| `@ai-sdk/openai` | OpenAI 适配器     | 相当于 axios 里的 adapter     |
+| `@ai-sdk/react`  | React hooks       | 相当于 react-query 之于 fetch |
+| `next`           | 全栈框架          | 你已经熟悉了                  |
 
 ---
 
 ## 概念总结
 
 ### 1. System Prompt（系统提示词）
+
 定义 AI 的角色和行为规则。用户看不到，但影响所有回答。Agent 开发中最重要的控制手段。
 
 ### 2. Messages 数组
+
 对话的完整历史。每次请求都带上全部历史，AI 才能"记住"之前说了什么。代价是 token 消耗随对话轮次线性增长。
 
 ### 3. 流式响应（Streaming）
+
 不等 AI 全部想完再返回，而是每生成一个 token 就立刻推给前端。用户体验从"等 5 秒看一大段"变成"实时看打字效果"。
 
 ### 4. Client vs Server Component
+
 - Server Component（默认）：在服务端渲染，不能用 useState/useEffect
 - Client Component（`"use client"`）：在浏览器运行，可以用 hooks、发请求
 
@@ -565,6 +744,7 @@ route.ts 在服务端运行（保护 API Key），Chat.tsx 在客户端运行（
 每次 LLM 调用都会消耗 token。AI SDK 的 `streamText` 在 `onFinish` 回调里返回 `usage` 对象，包含输入和输出的 token 数。
 
 计量的典型用途：
+
 - **成本控制**：按 token 计费，知道每次对话花了多少钱
 - **用户体验**：让用户看到消耗量，培养合理使用习惯
 - **调试优化**：发现 token 消耗异常的对话，优化 prompt 或截断策略
@@ -575,11 +755,11 @@ route.ts 在服务端运行（保护 API Key），Chat.tsx 在客户端运行（
 
 AI SDK 各层之间的消息格式不统一，这是实际开发中常见的坑：
 
-| 层 | 格式 | 示例 |
-|----|------|------|
-| useChat 返回 | `parts` 结构 | `{ role: "user", parts: [{ type: "text", text: "你好" }] }` |
-| streamText 期望 | `role/content` | `{ role: "user", content: "你好" }` |
-| OpenAI API | `role/content` | `{ role: "user", content: "你好" }` |
+| 层              | 格式           | 示例                                                        |
+| --------------- | -------------- | ----------------------------------------------------------- |
+| useChat 返回    | `parts` 结构   | `{ role: "user", parts: [{ type: "text", text: "你好" }] }` |
+| streamText 期望 | `role/content` | `{ role: "user", content: "你好" }`                         |
+| OpenAI API      | `role/content` | `{ role: "user", content: "你好" }`                         |
 
 所以 route.ts 里需要做 `formattedMessages` 转换。这个转换层在实际项目中经常被忽略，导致"前端发了消息但 AI 没回复"的 bug。
 

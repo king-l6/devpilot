@@ -70,6 +70,7 @@ export default function Chat() {
     requestIdRef.current = rid;
     pendingRequestRef.current = rid;
     sendMessage({ text: input });
+    console.log("messages", messages);
     setInput("");
   };
 
@@ -130,7 +131,9 @@ export default function Chat() {
                   <div className="text-xs text-zinc-500 mb-1">DevPilot</div>
                 )}
                 {msg.parts?.map((part, i) =>
-                  part.type === "text" ? <span key={i}>{part.text}</span> : null,
+                  part.type === "text" ? (
+                    <span key={i}>{part.text}</span>
+                  ) : null,
                 )}
               </div>
               {msg.role === "assistant" && msgUsages[msg.id] && (

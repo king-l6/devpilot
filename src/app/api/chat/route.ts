@@ -24,6 +24,7 @@ const openai = createOpenAI({
 });
 
 export async function POST(req: Request) {
+  console.log("=== POST /api/chat 被调用 ===");
   const { messages } = await req.json();
   const requestId = req.headers.get("x-request-id") || crypto.randomUUID();
 
@@ -47,7 +48,7 @@ export async function POST(req: Request) {
 - 提供代码审查建议
 - 解释错误日志和监控指标
 
-回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。`,
+回答风格：简洁专业，给出可执行的建议，必要时提供代码示例。回答必须用台湾腔`,
     messages: formattedMessages,
     onFinish: ({ usage }) => {
       usageStore.set(requestId, {
